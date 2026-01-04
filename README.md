@@ -94,9 +94,42 @@ Pre-loaded from your Caliber screenshots:
 | 3 | Upper B (Pull) | Back, biceps, traps |
 | 4 | Lower B (Hinge) | Deadlifts, hamstrings, core |
 
+## API Integrations
+
+### ✅ **FatSecret Integration** (Completed)
+- Daily nutrition tracking (calories, protein, carbs, fat)
+- Weight logging with automatic sync
+- Duplicate prevention and historical backfill
+- Scripts: `fatsecret_migration.py`, `fatsecret_backfill.py`
+
+### ✅ **Fitbit Integration** (Completed)
+- Daily activity data (steps, calories, distance, heart rate)
+- GPS route tracking with TCX export
+- Sleep tracking and heart rate zones
+- Exercise logging with detailed metrics
+- Script: `fitbit_integration.py`
+
+### 🔧 **Python Setup**
+Install Python dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+Configure API credentials:
+```bash
+./setup_fitbit_env.sh
+```
+
+Sync your data:
+```bash
+python fitbit_integration.py      # Fitbit data
+python fatsecret_migration.py     # FatSecret data
+```
+
 ## Future Enhancements
 
-- [ ] FatSecret API integration for nutrition/weight sync
+- [ ] Combined dashboard with all data sources
+- [ ] Route comparison and performance analytics
 - [ ] Exercise history & PR tracking
 - [ ] Progress photos
 - [ ] Rest timer

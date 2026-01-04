@@ -5,16 +5,32 @@ from datetime import datetime, timedelta
 import os
 import json
 
+# Load environment variables from .env files
+try:
+    from dotenv import load_dotenv
+    load_dotenv('.env.local')
+    load_dotenv('.env')
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+    print("   Falling back to system environment variables...")
+
 # --- CONFIGURATION ---
-CONSUMER_KEY = 'c3ab1cd3b0cd4347baf73ba80f1d5f57'
-CONSUMER_SECRET = 'd2f15ae45ad0489d83d763cf856ffab8'
+CONSUMER_KEY = os.environ.get('FATSECRET_CLIENT_ID')
+CONSUMER_SECRET = os.environ.get('FATSECRET_CLIENT_SECRET')
 TOKEN_CACHE_FILE = '.fatsecret_tokens.json'
+
+# Validate required environment variables
+if not CONSUMER_KEY or not CONSUMER_SECRET:
+    print("\n⚠️  Missing FatSecret credentials!")
+    print("Set environment variables: FATSECRET_CLIENT_ID and FATSECRET_CLIENT_SECRET")
+    print("Or add them to your .env.local file")
+    exit(1)
 
 def load_tokens():
     """Load saved access tokens."""
     if os.path.exists(TOKEN_CACHE_FILE):
-        with open(TOKEN_CACHE_FILE, 'rb') as f:
-            return pickle.load(f)
+        with open(TOKEN_CACHE_FILE, 'r') as f:
+            return json.load(f)
     return None
 
 def get_fatsecret_client():
@@ -115,8 +131,16 @@ def save_to_neon(data, date_str, db_conn=None):
 
 if __name__ == "__main__":
     try:
-        db_conn = input("Enter your Neon DB Connection String: ").strip()
-        
+        # Database connection
+        db_conn = os.environ.get('NEON_DB_URL') or os.environ.get('DATABASE_URL')
+        if not db_conn:
+            db_conn = input("Enter your Neon DB Connection String: ").strip()
+
+        if not db_conn or "user:password" in db_conn:
+            print("Please provide a valid Neon database connection string")
+            print("You can set NEON_DB_URL or DATABASE_URL environment variable")
+            exit(1)
+
         print("--- Starting 7-Day FatSecret Backfill ---")
         fs = get_fatsecret_client()
         

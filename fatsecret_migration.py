@@ -5,14 +5,27 @@ from datetime import datetime, timedelta
 import os
 import json
 
+# Load environment variables from .env files
+try:
+    from dotenv import load_dotenv
+    load_dotenv('.env.local')
+    load_dotenv('.env')
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+    print("   Falling back to system environment variables...")
+
 # --- CONFIGURATION ---
-# 1. FatSecret Credentials
-CONSUMER_KEY = 'c3ab1cd3b0cd4347baf73ba80f1d5f57'
-CONSUMER_SECRET = 'd2f15ae45ad0489d83d763cf856ffab8'
+# FatSecret Credentials
+CONSUMER_KEY = os.environ.get('FATSECRET_CLIENT_ID')
+CONSUMER_SECRET = os.environ.get('FATSECRET_CLIENT_SECRET')
 TOKEN_CACHE_FILE = '.fatsecret_tokens.json'
 
-# 2. Neon Database Connection String
-DB_CONNECTION_STRING = "postgres://user:password@ep-xyz.aws.neon.tech/neondb?sslmode=require"
+# Validate required environment variables
+if not CONSUMER_KEY or not CONSUMER_SECRET:
+    print("\n⚠️  Missing FatSecret credentials!")
+    print("Set environment variables: FATSECRET_CLIENT_ID and FATSECRET_CLIENT_SECRET")
+    print("Or add them to your .env.local file")
+    exit(1)
 
 # 3. Date to fetch (YYYY-MM-DD) - Yesterday
 TARGET_DATE = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -102,7 +115,7 @@ def save_to_neon(data, db_conn=None):
     Saves the fetched data into Neon Postgres.
     """
     if db_conn is None:
-        db_conn = DB_CONNECTION_STRING
+        # Database connection is now handled in main()
         
     conn = psycopg2.connect(db_conn)
     cur = conn.cursor()
@@ -162,10 +175,15 @@ def save_to_neon(data, db_conn=None):
 
 if __name__ == "__main__":
     try:
-        if "user:password" in DB_CONNECTION_STRING:
+        # Database connection
+        db_conn = os.environ.get('NEON_DB_URL') or os.environ.get('DATABASE_URL')
+        if not db_conn:
             db_conn = input("Enter your Neon DB Connection String: ").strip()
-        else:
-            db_conn = DB_CONNECTION_STRING
+
+        if not db_conn or "user:password" in db_conn:
+            print("Please provide a valid Neon database connection string")
+            print("You can set NEON_DB_URL or DATABASE_URL environment variable")
+            exit(1)
 
         print("--- Starting FatSecret API Export ---")
         fs = get_fatsecret_client()
