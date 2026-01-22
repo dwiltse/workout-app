@@ -31,6 +31,41 @@ CREATE TABLE IF NOT EXISTS fitbit_heart_rate (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Heart Rate Variability (HRV) - recovery and stress indicator
+CREATE TABLE IF NOT EXISTS fitbit_hrv (
+  id SERIAL PRIMARY KEY,
+  date DATE NOT NULL UNIQUE,
+  daily_rmssd DECIMAL(6,2), -- Root Mean Square of Successive Differences (ms)
+  deep_rmssd DECIMAL(6,2), -- HRV during deep sleep (ms)
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Blood Oxygen Saturation (SpO2)
+CREATE TABLE IF NOT EXISTS fitbit_spo2 (
+  id SERIAL PRIMARY KEY,
+  date DATE NOT NULL UNIQUE,
+  avg_spo2 DECIMAL(5,2), -- Average SpO2 percentage
+  min_spo2 DECIMAL(5,2), -- Minimum SpO2 percentage
+  max_spo2 DECIMAL(5,2), -- Maximum SpO2 percentage
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Breathing Rate (Respiratory Rate)
+CREATE TABLE IF NOT EXISTS fitbit_breathing_rate (
+  id SERIAL PRIMARY KEY,
+  date DATE NOT NULL UNIQUE,
+  breaths_per_minute DECIMAL(5,2), -- Average breaths per minute during sleep
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- VO2 Max (Cardio Fitness Score)
+CREATE TABLE IF NOT EXISTS fitbit_vo2_max (
+  id SERIAL PRIMARY KEY,
+  date DATE NOT NULL UNIQUE,
+  vo2_max DECIMAL(5,2), -- VO2 Max value (ml/kg/min)
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Sleep data
 CREATE TABLE IF NOT EXISTS fitbit_sleep (
   id SERIAL PRIMARY KEY,
@@ -119,6 +154,10 @@ ALTER TABLE fitbit_routes ADD CONSTRAINT unique_route_exercise UNIQUE (exercise_
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_fitbit_activity_date ON fitbit_activity_daily(date);
 CREATE INDEX IF NOT EXISTS idx_fitbit_heart_rate_date ON fitbit_heart_rate(date);
+CREATE INDEX IF NOT EXISTS idx_fitbit_hrv_date ON fitbit_hrv(date);
+CREATE INDEX IF NOT EXISTS idx_fitbit_spo2_date ON fitbit_spo2(date);
+CREATE INDEX IF NOT EXISTS idx_fitbit_breathing_rate_date ON fitbit_breathing_rate(date);
+CREATE INDEX IF NOT EXISTS idx_fitbit_vo2_max_date ON fitbit_vo2_max(date);
 CREATE INDEX IF NOT EXISTS idx_fitbit_sleep_date ON fitbit_sleep(date);
 CREATE INDEX IF NOT EXISTS idx_fitbit_exercises_date ON fitbit_exercises(date);
 CREATE INDEX IF NOT EXISTS idx_fitbit_gps_points_exercise ON fitbit_gps_points(exercise_log_id);
@@ -137,6 +176,11 @@ CREATE TABLE IF NOT EXISTS daily_summary (
   resting_heart_rate INTEGER,
   sleep_duration_minutes INTEGER,
   sleep_efficiency INTEGER,
+  -- Fitbit recovery & vitals
+  hrv_rmssd DECIMAL(6,2), -- Heart rate variability
+  spo2_avg DECIMAL(5,2), -- Blood oxygen percentage
+  breathing_rate DECIMAL(5,2), -- Breaths per minute
+  vo2_max DECIMAL(5,2), -- Cardio fitness score
   -- FatSecret nutrition data (populated from diet_logs)
   calories_consumed INTEGER,
   protein_g DECIMAL(6,1),

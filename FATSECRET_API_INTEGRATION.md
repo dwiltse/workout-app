@@ -8,6 +8,7 @@ Initially wanted to use MyFitnessPal's API, but pivoted to FatSecret for better 
 
 ## Solution Architecture
 
+
 ### Authentication: OAuth 1.0 (3-Legged)
 FatSecret requires OAuth 1.0 "3-Legged OAuth" for personal diary access (not OAuth 2.0).
 

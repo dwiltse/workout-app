@@ -7,6 +7,7 @@ npm-debug.log*
 .env
 .fatsecret_tokens.pkl
 .fatsecret_tokens.json
+.fitbit_tokens.json
 
 # Next.js build output
 .next/

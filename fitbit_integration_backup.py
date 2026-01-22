@@ -6,7 +6,6 @@ Fetches steps, workouts, heart rate, and sleep data from Fitbit API
 
 import requests
 import psycopg2
-from psycopg2.extras import execute_values
 import json
 import os
 from datetime import datetime, timedelta
@@ -17,8 +16,6 @@ import hashlib
 import secrets
 import xml.etree.ElementTree as ET
 import time
-import stat
-import argparse
 
 # Load environment variables from .env files
 try:
@@ -76,15 +73,7 @@ class FitbitAPI:
         }
         with open(TOKEN_CACHE_FILE, 'w') as f:
             json.dump(tokens, f, indent=2)
-        # Set secure file permissions (owner read/write only)
-        os.chmod(TOKEN_CACHE_FILE, stat.S_IRUSR | stat.S_IWUSR)
         print("✓ Saved Fitbit tokens to cache")
-
-    def _get_basic_auth_header(self):
-        """Generate Basic Auth header for token requests"""
-        auth_string = f"{self.client_id}:{self.client_secret}"
-        auth_bytes = auth_string.encode('ascii')
-        return base64.b64encode(auth_bytes).decode('ascii')
 
     def generate_pkce_pair(self):
         """Generate PKCE code verifier and challenge for OAuth 2.0"""
@@ -102,7 +91,7 @@ class FitbitAPI:
             'response_type': 'code',
             'client_id': self.client_id,
             'redirect_uri': self.redirect_uri,
-            'scope': 'activity heartrate sleep profile respiratory_rate oxygen_saturation cardio_fitness',
+            'scope': 'activity heartrate sleep profile',
             'code_challenge': code_challenge,
             'code_challenge_method': 'S256',
             'state': state
@@ -136,8 +125,12 @@ class FitbitAPI:
         }
 
         # Create Basic Auth header
+        auth_string = f"{self.client_id}:{self.client_secret}"
+        auth_bytes = auth_string.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+
         headers = {
-            'Authorization': f'Basic {self._get_basic_auth_header()}',
+            'Authorization': f'Basic {auth_b64}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
 
@@ -163,8 +156,12 @@ class FitbitAPI:
             'refresh_token': self.refresh_token
         }
 
+        auth_string = f"{self.client_id}:{self.client_secret}"
+        auth_bytes = auth_string.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+
         headers = {
-            'Authorization': f'Basic {self._get_basic_auth_header()}',
+            'Authorization': f'Basic {auth_b64}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
 
@@ -225,22 +222,6 @@ class FitbitAPI:
         """Get exercise log for a specific date"""
         activity_data = self.get_daily_activity(date)
         return activity_data.get('activities', [])
-
-    def get_hrv_data(self, date):
-        """Get heart rate variability data for a specific date"""
-        return self.make_api_request('/user/-/hrv/date/{date}.json', date)
-
-    def get_spo2_data(self, date):
-        """Get SpO2 (blood oxygen) data for a specific date"""
-        return self.make_api_request('/user/-/spo2/date/{date}.json', date)
-
-    def get_breathing_rate(self, date):
-        """Get breathing rate data for a specific date"""
-        return self.make_api_request('/user/-/br/date/{date}.json', date)
-
-    def get_vo2_max(self, date):
-        """Get VO2 Max (cardio fitness) data for a specific date"""
-        return self.make_api_request('/user/-/cardioscore/date/{date}.json', date)
 
     def get_activity_tcx(self, log_id):
         """Get TCX data for a specific activity (GPS/heart rate data)"""
@@ -430,19 +411,14 @@ class FitbitAPI:
             print(f"Error processing TCX data: {e}")
             return [], None
 
-def save_to_database(fitbit_data, date, conn):
-    """Save Fitbit data to Neon Postgres database
-
-    Args:
-        fitbit_data: Dictionary containing Fitbit API data
-        date: Date for the data
-        conn: Active psycopg2 connection (will not be closed by this function)
-    """
+def save_to_database(fitbit_data, date, db_conn):
+    """Save Fitbit data to Neon Postgres database"""
+    conn = psycopg2.connect(db_conn)
     cur = conn.cursor()
 
     try:
         # Save daily activity data
-        if 'activity' in fitbit_data and 'summary' in fitbit_data['activity']:
+        if 'summary' in fitbit_data['activity']:
             summary = fitbit_data['activity']['summary']
             cur.execute("""
                 INSERT INTO fitbit_activity_daily
@@ -505,94 +481,6 @@ def save_to_database(fitbit_data, date, conn):
                 """, (date, resting_hr, out_of_range, fat_burn, cardio, peak))
                 print(f"✓ Saved heart rate data for {date}")
 
-        # Save HRV data
-        if 'hrv' in fitbit_data:
-            hrv_data = fitbit_data['hrv']
-            if hrv_data.get('hrv'):
-                for hrv_entry in hrv_data['hrv']:
-                    hrv_summary = hrv_entry.get('value', {})
-                    daily_rmssd = hrv_summary.get('dailyRmssd')
-                    deep_rmssd = hrv_summary.get('deepRmssd')
-
-                    if daily_rmssd or deep_rmssd:
-                        cur.execute("""
-                            INSERT INTO fitbit_hrv
-                            (date, daily_rmssd, deep_rmssd)
-                            VALUES (%s, %s, %s)
-                            ON CONFLICT (date) DO UPDATE SET
-                                daily_rmssd = EXCLUDED.daily_rmssd,
-                                deep_rmssd = EXCLUDED.deep_rmssd
-                        """, (date, daily_rmssd, deep_rmssd))
-                        print(f"✓ Saved HRV data for {date}")
-
-        # Save SpO2 data
-        if 'spo2' in fitbit_data:
-            spo2_data = fitbit_data['spo2']
-            if spo2_data:
-                spo2_value = spo2_data.get('value', {})
-                avg_spo2 = spo2_value.get('avg')
-                min_spo2 = spo2_value.get('min')
-                max_spo2 = spo2_value.get('max')
-
-                if avg_spo2:
-                    cur.execute("""
-                        INSERT INTO fitbit_spo2
-                        (date, avg_spo2, min_spo2, max_spo2)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (date) DO UPDATE SET
-                            avg_spo2 = EXCLUDED.avg_spo2,
-                            min_spo2 = EXCLUDED.min_spo2,
-                            max_spo2 = EXCLUDED.max_spo2
-                    """, (date, avg_spo2, min_spo2, max_spo2))
-                    print(f"✓ Saved SpO2 data for {date}")
-
-        # Save Breathing Rate data
-        if 'breathing_rate' in fitbit_data:
-            br_data = fitbit_data['breathing_rate']
-            if br_data.get('br'):
-                for br_entry in br_data['br']:
-                    br_value = br_entry.get('value', {})
-                    breathing_rate = br_value.get('breathingRate')
-
-                    if breathing_rate:
-                        cur.execute("""
-                            INSERT INTO fitbit_breathing_rate
-                            (date, breaths_per_minute)
-                            VALUES (%s, %s)
-                            ON CONFLICT (date) DO UPDATE SET
-                                breaths_per_minute = EXCLUDED.breaths_per_minute
-                        """, (date, breathing_rate))
-                        print(f"✓ Saved breathing rate data for {date}")
-
-        # Save VO2 Max data
-        if 'vo2_max' in fitbit_data:
-            vo2_data = fitbit_data['vo2_max']
-            if vo2_data.get('cardioScore'):
-                for vo2_entry in vo2_data['cardioScore']:
-                    vo2_value = vo2_entry.get('value', {})
-                    vo2_max_raw = vo2_value.get('vo2Max')
-
-                    if vo2_max_raw:
-                        # Handle range format like "43-47" - take the midpoint
-                        if isinstance(vo2_max_raw, str) and '-' in vo2_max_raw:
-                            try:
-                                parts = vo2_max_raw.split('-')
-                                vo2_max = (float(parts[0]) + float(parts[1])) / 2
-                            except (ValueError, IndexError):
-                                print(f"  ⚠ Could not parse VO2 Max range: {vo2_max_raw}")
-                                continue
-                        else:
-                            vo2_max = float(vo2_max_raw)
-
-                        cur.execute("""
-                            INSERT INTO fitbit_vo2_max
-                            (date, vo2_max)
-                            VALUES (%s, %s)
-                            ON CONFLICT (date) DO UPDATE SET
-                                vo2_max = EXCLUDED.vo2_max
-                        """, (date, vo2_max))
-                        print(f"✓ Saved VO2 Max data for {date} (VO2: {vo2_max})")
-
         # Save sleep data
         if 'sleep' in fitbit_data:
             sleep_data = fitbit_data['sleep']
@@ -637,28 +525,20 @@ def save_to_database(fitbit_data, date, conn):
                 for exercise in fitbit_data['exercises']:
                     exercise_log_id = exercise.get('logId')
                     has_gps = exercise.get('hasGPS', False)
-                    
-                    # Parse start_time - could be full timestamp or just time string
-                    start_time_raw = exercise.get('startTime')
-                    start_time = None
-                    if start_time_raw:
-                        # If it's just a time like "07:34", combine with date
-                        if len(start_time_raw) <= 8 and ':' in start_time_raw:
-                            start_time = f"{date} {start_time_raw}"
-                        else:
-                            start_time = start_time_raw
+                    tcx_data = exercise.get('tcx_data', '')
 
                     # Save exercise log
                     cur.execute("""
                         INSERT INTO fitbit_exercises
                         (date, exercise_log_id, activity_name, activity_type_id,
-                         duration_minutes, calories, distance, start_time, has_gps)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         duration_minutes, calories, distance, start_time, has_gps, tcx_data)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (exercise_log_id) DO UPDATE SET
                             duration_minutes = EXCLUDED.duration_minutes,
                             calories = EXCLUDED.calories,
                             distance = EXCLUDED.distance,
-                            has_gps = EXCLUDED.has_gps
+                            has_gps = EXCLUDED.has_gps,
+                            tcx_data = EXCLUDED.tcx_data
                     """, (
                         date,
                         exercise_log_id,
@@ -667,80 +547,78 @@ def save_to_database(fitbit_data, date, conn):
                         exercise.get('duration', 0) // 60000,  # Convert ms to minutes
                         exercise.get('calories', 0),
                         exercise.get('distance', 0),
-                        start_time,
-                        has_gps
+                        exercise.get('startTime'),
+                        has_gps,
+                        tcx_data
                     ))
 
-                    # Save GPS points if available (must be inside the for loop)
-                    gps_points = exercise.get('gps_points', [])
-                    if gps_points:
-                        # Clear existing GPS points for this exercise
-                        cur.execute("DELETE FROM fitbit_gps_points WHERE exercise_log_id = %s", (exercise_log_id,))
+                # Save GPS points if available
+                gps_points = exercise.get('gps_points', [])
+                if gps_points:
+                    # Clear existing GPS points for this exercise
+                    cur.execute("DELETE FROM fitbit_gps_points WHERE exercise_log_id = %s", (exercise_log_id,))
 
-                        # Batch insert GPS points using execute_values for better performance
-                        gps_values = [
-                            (
-                                point['exercise_log_id'],
-                                point['time_offset_seconds'],
-                                point['latitude'],
-                                point['longitude'],
-                                point['altitude_feet'],
-                                point['distance_miles'],
-                                point['heart_rate'],
-                                point['cadence'],
-                                point['speed_mph'],
-                                point['recorded_at']
-                            )
-                            for point in gps_points
-                        ]
-                        execute_values(cur, """
+                    # Insert GPS points
+                    for point in gps_points:
+                        cur.execute("""
                             INSERT INTO fitbit_gps_points
                             (exercise_log_id, time_offset_seconds, latitude, longitude,
                              altitude_feet, distance_miles, heart_rate, cadence,
                              speed_mph, recorded_at)
-                            VALUES %s
-                        """, gps_values)
-
-                    # Save route summary if available
-                    route_data = exercise.get('route_data')
-                    if route_data and route_data['gps_points_count'] > 0:
-                        cur.execute("""
-                            INSERT INTO fitbit_routes
-                            (exercise_log_id, activity_name, start_latitude, start_longitude,
-                             end_latitude, end_longitude, min_latitude, max_latitude,
-                             min_longitude, max_longitude, total_distance_miles,
-                             total_elevation_gain_feet, max_speed_mph, gps_points_count, route_date)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (exercise_log_id) DO UPDATE SET
-                                start_latitude = EXCLUDED.start_latitude,
-                                start_longitude = EXCLUDED.start_longitude,
-                                end_latitude = EXCLUDED.end_latitude,
-                                end_longitude = EXCLUDED.end_longitude,
-                                min_latitude = EXCLUDED.min_latitude,
-                                max_latitude = EXCLUDED.max_latitude,
-                                min_longitude = EXCLUDED.min_longitude,
-                                max_longitude = EXCLUDED.max_longitude,
-                                total_distance_miles = EXCLUDED.total_distance_miles,
-                                total_elevation_gain_feet = EXCLUDED.total_elevation_gain_feet,
-                                max_speed_mph = EXCLUDED.max_speed_mph,
-                                gps_points_count = EXCLUDED.gps_points_count
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
-                            route_data['exercise_log_id'],
-                            exercise.get('activityName'),
-                            route_data['start_latitude'],
-                            route_data['start_longitude'],
-                            route_data['end_latitude'],
-                            route_data['end_longitude'],
-                            route_data['min_latitude'],
-                            route_data['max_latitude'],
-                            route_data['min_longitude'],
-                            route_data['max_longitude'],
-                            route_data['total_distance_miles'],
-                            route_data['total_elevation_gain_feet'],
-                            route_data['max_speed_mph'],
-                            route_data['gps_points_count'],
-                            date
+                            point['exercise_log_id'],
+                            point['time_offset_seconds'],
+                            point['latitude'],
+                            point['longitude'],
+                            point['altitude_feet'],
+                            point['distance_miles'],
+                            point['heart_rate'],
+                            point['cadence'],
+                            point['speed_mph'],
+                            point['recorded_at']
                         ))
+
+                # Save route summary if available
+                route_data = exercise.get('route_data')
+                if route_data and route_data['gps_points_count'] > 0:
+                    cur.execute("""
+                        INSERT INTO fitbit_routes
+                        (exercise_log_id, activity_name, start_latitude, start_longitude,
+                         end_latitude, end_longitude, min_latitude, max_latitude,
+                         min_longitude, max_longitude, total_distance_miles,
+                         total_elevation_gain_feet, max_speed_mph, gps_points_count, route_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (exercise_log_id) DO UPDATE SET
+                            start_latitude = EXCLUDED.start_latitude,
+                            start_longitude = EXCLUDED.start_longitude,
+                            end_latitude = EXCLUDED.end_latitude,
+                            end_longitude = EXCLUDED.end_longitude,
+                            min_latitude = EXCLUDED.min_latitude,
+                            max_latitude = EXCLUDED.max_latitude,
+                            min_longitude = EXCLUDED.min_longitude,
+                            max_longitude = EXCLUDED.max_longitude,
+                            total_distance_miles = EXCLUDED.total_distance_miles,
+                            total_elevation_gain_feet = EXCLUDED.total_elevation_gain_feet,
+                            max_speed_mph = EXCLUDED.max_speed_mph,
+                            gps_points_count = EXCLUDED.gps_points_count
+                    """, (
+                        route_data['exercise_log_id'],
+                        exercise.get('activityName'),
+                        route_data['start_latitude'],
+                        route_data['start_longitude'],
+                        route_data['end_latitude'],
+                        route_data['end_longitude'],
+                        route_data['min_latitude'],
+                        route_data['max_latitude'],
+                        route_data['min_longitude'],
+                        route_data['max_longitude'],
+                        route_data['total_distance_miles'],
+                        route_data['total_elevation_gain_feet'],
+                        route_data['max_speed_mph'],
+                        route_data['gps_points_count'],
+                        date
+                    ))
 
                 print(f"✓ Saved {len(fitbit_data['exercises'])} exercise logs for {date}")
         except Exception as e:
@@ -755,6 +633,7 @@ def save_to_database(fitbit_data, date, conn):
         conn.rollback()
     finally:
         cur.close()
+        conn.close()
 
 def create_tables_if_needed(db_conn):
     """Create Fitbit tables if they don't exist"""
@@ -793,37 +672,6 @@ def create_tables_if_needed(db_conn):
           created_at TIMESTAMP DEFAULT NOW()
         );
 
-        CREATE TABLE IF NOT EXISTS fitbit_hrv (
-          id SERIAL PRIMARY KEY,
-          date DATE NOT NULL UNIQUE,
-          daily_rmssd DECIMAL(6,2),
-          deep_rmssd DECIMAL(6,2),
-          created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS fitbit_spo2 (
-          id SERIAL PRIMARY KEY,
-          date DATE NOT NULL UNIQUE,
-          avg_spo2 DECIMAL(5,2),
-          min_spo2 DECIMAL(5,2),
-          max_spo2 DECIMAL(5,2),
-          created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS fitbit_breathing_rate (
-          id SERIAL PRIMARY KEY,
-          date DATE NOT NULL UNIQUE,
-          breaths_per_minute DECIMAL(5,2),
-          created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS fitbit_vo2_max (
-          id SERIAL PRIMARY KEY,
-          date DATE NOT NULL UNIQUE,
-          vo2_max DECIMAL(5,2),
-          created_at TIMESTAMP DEFAULT NOW()
-        );
-
         CREATE TABLE IF NOT EXISTS fitbit_sleep (
           id SERIAL PRIMARY KEY,
           date DATE NOT NULL,
@@ -856,6 +704,7 @@ def create_tables_if_needed(db_conn):
           heart_rate_max INTEGER,
           start_time TIMESTAMP,
           has_gps BOOLEAN DEFAULT FALSE,
+          tcx_data TEXT,
           created_at TIMESTAMP DEFAULT NOW()
         );
 
@@ -898,10 +747,6 @@ def create_tables_if_needed(db_conn):
         -- Indexes
         CREATE INDEX IF NOT EXISTS idx_fitbit_activity_date ON fitbit_activity_daily(date);
         CREATE INDEX IF NOT EXISTS idx_fitbit_heart_rate_date ON fitbit_heart_rate(date);
-        CREATE INDEX IF NOT EXISTS idx_fitbit_hrv_date ON fitbit_hrv(date);
-        CREATE INDEX IF NOT EXISTS idx_fitbit_spo2_date ON fitbit_spo2(date);
-        CREATE INDEX IF NOT EXISTS idx_fitbit_breathing_rate_date ON fitbit_breathing_rate(date);
-        CREATE INDEX IF NOT EXISTS idx_fitbit_vo2_max_date ON fitbit_vo2_max(date);
         CREATE INDEX IF NOT EXISTS idx_fitbit_sleep_date ON fitbit_sleep(date);
         CREATE INDEX IF NOT EXISTS idx_fitbit_exercises_date ON fitbit_exercises(date);
         CREATE INDEX IF NOT EXISTS idx_fitbit_gps_points_exercise ON fitbit_gps_points(exercise_log_id);
@@ -919,43 +764,6 @@ def create_tables_if_needed(db_conn):
         conn.close()
 
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(
-        description='Sync Fitbit data to Postgres database',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  # Default: sync last 3 days
-  python fitbit_integration.py
-
-  # Sync last 7 days
-  python fitbit_integration.py --days 7
-
-  # Sync specific date range
-  python fitbit_integration.py --start-date 2025-01-01 --end-date 2025-01-15
-
-  # Backfill entire month
-  python fitbit_integration.py --start-date 2024-12-01 --end-date 2024-12-31
-        '''
-    )
-    parser.add_argument(
-        '--days',
-        type=int,
-        default=3,
-        help='Number of days to sync back from today (default: 3)'
-    )
-    parser.add_argument(
-        '--start-date',
-        type=str,
-        help='Start date for sync (YYYY-MM-DD). Overrides --days if provided.'
-    )
-    parser.add_argument(
-        '--end-date',
-        type=str,
-        help='End date for sync (YYYY-MM-DD). Defaults to today if --start-date is provided.'
-    )
-    args = parser.parse_args()
-
     print("=== Fitbit Data Sync ===\n")
 
     # Database connection
@@ -977,175 +785,110 @@ Examples:
         print("No existing authorization found. Starting OAuth flow...")
         fitbit.authorize()
 
-    # Determine date range based on arguments
-    if args.start_date:
-        # Use explicit date range
+    # Get date range to sync
+    end_date = datetime.now().date()
+    days_back = input(f"\nHow many days back to sync? [default: 7]: ").strip()
+    days_back = int(days_back) if days_back.isdigit() else 7
+
+    start_date = end_date - timedelta(days=days_back-1)
+
+    print(f"\nSyncing Fitbit data from {start_date} to {end_date}...")
+
+    # Fetch and save data for each day
+    total_days = 0
+    success_days = 0
+
+    current_date = start_date
+    while current_date <= end_date:
         try:
-            start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date()
-            if args.end_date:
-                end_date = datetime.strptime(args.end_date, '%Y-%m-%d').date()
-            else:
-                end_date = datetime.now().date()
-        except ValueError as e:
-            print(f"❌ Invalid date format: {e}")
-            print("Use YYYY-MM-DD format (e.g., 2025-01-15)")
-            return
-    else:
-        # Use days-back approach (default behavior)
-        end_date = datetime.now().date()
-        # 3-day lookback optimized for daily automated runs:
-        # - API safe: ~24-30 calls vs 150/hour limit
-        # - Redundancy: Can miss 1-2 runs without data loss due to overlap
-        # - Catches late data: Fitbit sometimes processes sleep/activity data with delay
-        # - UPSERT safe: Database handles duplicate dates gracefully
-        days_back = args.days
-        start_date = end_date - timedelta(days=days_back-1)
+            print(f"\nProcessing {current_date}...")
 
-    # Calculate total days for display
-    total_range_days = (end_date - start_date).days + 1
-    print(f"\nSyncing Fitbit data from {start_date} to {end_date} ({total_range_days} days)...")
+            # Gather all data for this date
+            fitbit_data = {}
 
-    # Create persistent database connection for entire sync
-    conn = psycopg2.connect(db_conn)
-
-    try:
-        # Fetch and save data for each day
-        total_days = 0
-        success_days = 0
-
-        current_date = start_date
-        while current_date <= end_date:
+            # Activity data (steps, calories, etc.)
             try:
-                print(f"\nProcessing {current_date}...")
-
-                # Gather all data for this date
-                fitbit_data = {}
-
-                # Activity data (steps, calories, etc.)
-                try:
-                    activity_data = fitbit.get_daily_activity(current_date)
-                    fitbit_data['activity'] = activity_data
-                    print(f"  ✓ Activity: {activity_data.get('summary', {}).get('steps', 0)} steps")
-                except Exception as e:
-                    print(f"  ✗ Activity data error: {e}")
-
-                # Heart rate data
-                try:
-                    hr_data = fitbit.get_heart_rate(current_date)
-                    fitbit_data['heart_rate'] = hr_data
-                    if hr_data.get('activities-heart'):
-                        rhr = hr_data['activities-heart'][0].get('value', {}).get('restingHeartRate')
-                        print(f"  ✓ Heart rate: RHR {rhr if rhr else 'N/A'}")
-                except Exception as e:
-                    print(f"  ✗ Heart rate data error: {e}")
-
-                # Sleep data
-                try:
-                    sleep_data = fitbit.get_sleep_data(current_date)
-                    fitbit_data['sleep'] = sleep_data
-                    sleep_logs = sleep_data.get('sleep', [])
-                    print(f"  ✓ Sleep: {len(sleep_logs)} log(s)")
-                except Exception as e:
-                    print(f"  ✗ Sleep data error: {e}")
-
-                # HRV data
-                try:
-                    hrv_data = fitbit.get_hrv_data(current_date)
-                    fitbit_data['hrv'] = hrv_data
-                    if hrv_data.get('hrv'):
-                        print(f"  ✓ HRV: Available")
-                except Exception as e:
-                    print(f"  ✗ HRV data error: {e}")
-
-                # SpO2 data
-                try:
-                    spo2_data = fitbit.get_spo2_data(current_date)
-                    fitbit_data['spo2'] = spo2_data
-                    if spo2_data:
-                        avg = spo2_data.get('value', {}).get('avg')
-                        if avg:
-                            print(f"  ✓ SpO2: {avg}%")
-                except Exception as e:
-                    print(f"  ✗ SpO2 data error: {e}")
-
-                # Breathing Rate data
-                try:
-                    br_data = fitbit.get_breathing_rate(current_date)
-                    fitbit_data['breathing_rate'] = br_data
-                    if br_data.get('br'):
-                        print(f"  ✓ Breathing Rate: Available")
-                except Exception as e:
-                    print(f"  ✗ Breathing rate error: {e}")
-
-                # VO2 Max data
-                try:
-                    vo2_data = fitbit.get_vo2_max(current_date)
-                    fitbit_data['vo2_max'] = vo2_data
-                    if vo2_data.get('cardioScore'):
-                        print(f"  ✓ VO2 Max: Available")
-                except Exception as e:
-                    print(f"  ✗ VO2 Max data error: {e}")
-
-                # Exercise logs with GPS data
-                try:
-                    exercises = fitbit.get_exercise_log(current_date)
-
-                    # For each exercise, check if it has GPS data and fetch TCX
-                    for exercise in exercises:
-                        log_id = exercise.get('logId')
-                        has_gps = exercise.get('hasGPS', False)
-
-                        if has_gps:
-                            try:
-                                print(f"    📍 Fetching GPS data for {exercise.get('activityName', 'Unknown')} ({log_id})")
-                                tcx_data = fitbit.get_activity_tcx(log_id)
-
-                                if tcx_data:
-                                    # Parse TCX data
-                                    gps_points, route_data = fitbit.parse_tcx_data(tcx_data, log_id)
-                                    exercise['tcx_data'] = tcx_data
-                                    exercise['gps_points'] = gps_points
-                                    exercise['route_data'] = route_data
-
-                                    if route_data and route_data['gps_points_count'] > 0:
-                                        print(f"      ✓ {route_data['gps_points_count']} GPS points, {route_data['total_distance_miles']:.2f} mi")
-                                    else:
-                                        print(f"      ⚠ GPS data found but no valid points extracted")
-                                else:
-                                    print(f"      ⚠ No TCX data available for exercise {log_id}")
-
-                            except Exception as tcx_error:
-                                print(f"      ✗ Error fetching GPS data: {tcx_error}")
-
-                    fitbit_data['exercises'] = exercises
-                    print(f"  ✓ Exercises: {len(exercises)} log(s)")
-                except Exception as e:
-                    print(f"  ✗ Exercise data error: {e}")
-
-                # Save to database
-                if fitbit_data:
-                    save_to_database(fitbit_data, current_date, conn)
-                    success_days += 1
-
-                total_days += 1
-                current_date += timedelta(days=1)
-
-                # Rate limiting - small delay between days to avoid hitting API limits
-                if current_date <= end_date:  # Don't delay on the last day
-                    time.sleep(2)  # 2-second delay between days
-
+                activity_data = fitbit.get_daily_activity(current_date)
+                fitbit_data['activity'] = activity_data
+                print(f"  ✓ Activity: {activity_data.get('summary', {}).get('steps', 0)} steps")
             except Exception as e:
-                print(f"✗ Error processing {current_date}: {e}")
-                current_date += timedelta(days=1)
-                total_days += 1
+                print(f"  ✗ Activity data error: {e}")
 
-        print(f"\n=== Sync Complete ===")
-        print(f"Successfully processed: {success_days}/{total_days} days")
-        print(f"Data saved to database: {db_conn.split('@')[1].split('/')[0] if '@' in db_conn else 'database'}")
+            # Heart rate data
+            try:
+                hr_data = fitbit.get_heart_rate(current_date)
+                fitbit_data['heart_rate'] = hr_data
+                if hr_data.get('activities-heart'):
+                    rhr = hr_data['activities-heart'][0].get('value', {}).get('restingHeartRate')
+                    print(f"  ✓ Heart rate: RHR {rhr if rhr else 'N/A'}")
+            except Exception as e:
+                print(f"  ✗ Heart rate data error: {e}")
 
-    finally:
-        conn.close()
-        print("✓ Database connection closed")
+            # Sleep data
+            try:
+                sleep_data = fitbit.get_sleep_data(current_date)
+                fitbit_data['sleep'] = sleep_data
+                sleep_logs = sleep_data.get('sleep', [])
+                print(f"  ✓ Sleep: {len(sleep_logs)} log(s)")
+            except Exception as e:
+                print(f"  ✗ Sleep data error: {e}")
+
+            # Exercise logs with GPS data
+            try:
+                exercises = fitbit.get_exercise_log(current_date)
+
+                # For each exercise, check if it has GPS data and fetch TCX
+                for exercise in exercises:
+                    log_id = exercise.get('logId')
+                    has_gps = exercise.get('hasGPS', False)
+
+                    if has_gps:
+                        try:
+                            print(f"    📍 Fetching GPS data for {exercise.get('activityName', 'Unknown')} ({log_id})")
+                            tcx_data = fitbit.get_activity_tcx(log_id)
+
+                            if tcx_data:
+                                # Parse TCX data
+                                gps_points, route_data = fitbit.parse_tcx_data(tcx_data, log_id)
+                                exercise['tcx_data'] = tcx_data
+                                exercise['gps_points'] = gps_points
+                                exercise['route_data'] = route_data
+
+                                if route_data and route_data['gps_points_count'] > 0:
+                                    print(f"      ✓ {route_data['gps_points_count']} GPS points, {route_data['total_distance_miles']:.2f} mi")
+                                else:
+                                    print(f"      ⚠ GPS data found but no valid points extracted")
+                            else:
+                                print(f"      ⚠ No TCX data available for exercise {log_id}")
+
+                        except Exception as tcx_error:
+                            print(f"      ✗ Error fetching GPS data: {tcx_error}")
+
+                fitbit_data['exercises'] = exercises
+                print(f"  ✓ Exercises: {len(exercises)} log(s)")
+            except Exception as e:
+                print(f"  ✗ Exercise data error: {e}")
+
+            # Save to database
+            if fitbit_data:
+                save_to_database(fitbit_data, current_date, db_conn)
+                success_days += 1
+
+            total_days += 1
+            current_date += timedelta(days=1)
+
+            # Rate limiting - small delay between days to avoid hitting API limits
+            if current_date <= end_date:  # Don't delay on the last day
+                time.sleep(2)  # 2-second delay between days
+
+        except Exception as e:
+            print(f"✗ Error processing {current_date}: {e}")
+            current_date += timedelta(days=1)
+            total_days += 1
+
+    print(f"\n=== Sync Complete ===")
+    print(f"Successfully processed: {success_days}/{total_days} days")
+    print(f"Data saved to database: {db_conn.split('@')[1].split('/')[0] if '@' in db_conn else 'database'}")
 
 if __name__ == "__main__":
     main()

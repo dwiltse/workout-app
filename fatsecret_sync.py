@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
-FatSecret Weight Data Sync Tool
+FatSecret Nutrition Data Sync Tool
 
-Syncs weight data from FatSecret API to Neon Postgres database.
-Supports both single-month fetching and multi-month backfill operations.
+Syncs nutrition data from FatSecret API to Neon Postgres database.
+Supports both single-date fetching and multi-day backfill operations.
 
 Usage:
     # Interactive mode (prompts for date)
-    python fatsecret_weight.py
+    python fatsecret_sync.py
 
-    # Fetch specific month
-    python fatsecret_weight.py --date 2024-01-15
+    # Fetch specific date
+    python fatsecret_sync.py --date 2024-01-15
 
-    # Backfill last 3 months
-    python fatsecret_weight.py --backfill 3
+    # Backfill last 7 days
+    python fatsecret_sync.py --backfill 7
 
-    # Backfill last 6 months (quiet mode for cron)
-    python fatsecret_weight.py --backfill 6 --quiet
+    # Backfill last 30 days (quiet mode for cron)
+    python fatsecret_sync.py --backfill 30 --quiet
 
     # Initial OAuth authentication
-    python fatsecret_weight.py --auth
+    python fatsecret_sync.py --auth
 
 Environment Variables:
     FATSECRET_CLIENT_ID          - FatSecret API consumer key
@@ -56,6 +56,23 @@ TOKEN_CACHE_FILE = os.environ.get('FATSECRET_TOKEN_CACHE', '.fatsecret_tokens.js
 # Optional: Pre-configured tokens for CI/cron environments
 ENV_ACCESS_TOKEN = os.environ.get('FATSECRET_ACCESS_TOKEN')
 ENV_ACCESS_TOKEN_SECRET = os.environ.get('FATSECRET_ACCESS_TOKEN_SECRET')
+
+class QuietMode:
+    """Context manager for suppressing print statements in quiet mode."""
+    def __init__(self, quiet=False):
+        self.quiet = quiet
+        self.original_stdout = None
+
+    def __enter__(self):
+        if self.quiet:
+            self.original_stdout = sys.stdout
+            sys.stdout = open(os.devnull, 'w')
+        return self
+
+    def __exit__(self, *args):
+        if self.quiet and self.original_stdout:
+            sys.stdout.close()
+            sys.stdout = self.original_stdout
 
 def validate_credentials():
     """Validate that required credentials are present."""
@@ -150,43 +167,34 @@ def get_fatsecret_client(force_auth=False):
         print(f"⚠️  Authentication failed: {e}")
         return None
 
-def fetch_weight_data(fs, date_str, quiet=False):
+def fetch_food_diary(fs, date_str):
     """
-    Fetches weight entries for a specific month.
+    Fetches food entries for a specific date.
 
     Args:
         fs: Fatsecret client instance
-        date_str: Date string in YYYY-MM-DD format (any day in the desired month)
-        quiet: If True, suppress progress output
+        date_str: Date string in YYYY-MM-DD format
 
     Returns:
-        Weight entries data (list)
+        Food diary data (dict or list)
     """
-    if not quiet:
-        print(f"Fetching weight data for month containing {date_str}...")
     try:
         # Convert string date to datetime object
         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-
-        # The library fetches all weights for the month
-        weights = fs.weights_get_month(date=date_obj)
-        return weights
-    except KeyError:
-        # No weight entries for that month
-        if not quiet:
-            print(f"  No weight data found for month {date_str}")
-        return []
+        diary = fs.food_entries_get(date=date_obj)
+        return diary
     except Exception as e:
-        if not quiet:
-            print(f"  ⚠️  Error fetching {date_str}: {e}")
-        return []
+        print(f"  ⚠️  Error fetching {date_str}: {e}")
+        # Return empty structure to continue processing other dates
+        return {'food_entries': {'food_entry': []}}
 
-def save_to_neon(data, db_conn, quiet=False):
+def save_to_neon(data, date_str, db_conn, quiet=False):
     """
-    Saves the fetched weight data into Neon Postgres.
+    Saves the fetched data into Neon Postgres.
 
     Args:
-        data: Weight data from FatSecret API
+        data: Food diary data from FatSecret API
+        date_str: Date string in YYYY-MM-DD format
         db_conn: Database connection string
         quiet: If True, suppress progress output
 
@@ -198,21 +206,45 @@ def save_to_neon(data, db_conn, quiet=False):
             with conn.cursor() as cur:
                 # Create table if it doesn't exist
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS weight_logs (
+                    CREATE TABLE IF NOT EXISTS diet_logs (
                         id SERIAL PRIMARY KEY,
                         date DATE,
-                        weight DECIMAL(5,1),
-                        fat_percentage DECIMAL(5,2),
-                        comment TEXT,
+                        meal VARCHAR(50),
+                        food_name VARCHAR(255),
+                        calories DECIMAL,
+                        protein DECIMAL,
+                        carbs DECIMAL,
+                        fat DECIMAL,
+                        fiber DECIMAL,
+                        sugar DECIMAL,
+                        sodium DECIMAL,
+                        saturated_fat DECIMAL,
+                        polyunsaturated_fat DECIMAL,
+                        monounsaturated_fat DECIMAL,
+                        cholesterol DECIMAL,
+                        potassium DECIMAL,
                         entry_id BIGINT UNIQUE
                     );
                 """)
 
-                # Handle both old format (dict) and new format (list directly)
+                # Add new columns if they don't exist (for existing tables)
+                new_columns = ['sugar', 'sodium', 'saturated_fat', 'polyunsaturated_fat',
+                               'monounsaturated_fat', 'cholesterol', 'potassium']
+                for column in new_columns:
+                    cur.execute(f"""
+                        DO $$
+                        BEGIN
+                            ALTER TABLE diet_logs ADD COLUMN {column} DECIMAL;
+                        EXCEPTION
+                            WHEN duplicate_column THEN NULL;
+                        END $$;
+                    """)
+
+                # Handle both old format (dict with 'food_entries' key) and new format (list directly)
                 if isinstance(data, list):
                     entries = data
                 else:
-                    entries = data.get('weight_entries', {}).get('weight_entry', [])
+                    entries = data.get('food_entries', {}).get('food_entry', [])
                     if not isinstance(entries, list):
                         entries = [entries] if entries else []
 
@@ -223,47 +255,55 @@ def save_to_neon(data, db_conn, quiet=False):
                 updated_count = 0
 
                 for entry in entries:
-                    try:
-                        # Extract weight entry fields
-                        # FatSecret returns: date_int (days since epoch), weight_kg
-                        date_int = entry.get('date_int')
-                        weight_kg = entry.get('weight_kg')
-                        fat_pct = entry.get('fat')
-                        comment = entry.get('comment', '')
-                        entry_id = entry.get('weight_entry_id', date_int)  # Use date_int as fallback ID
+                    # Store current count to detect if this is insert or update
+                    cur.execute("SELECT COUNT(*) FROM diet_logs WHERE entry_id = %s",
+                               (entry.get('food_entry_id'),))
+                    exists_before = cur.fetchone()[0] > 0
 
-                        # Convert date_int (days since epoch) to date
-                        if date_int:
-                            date_val = (datetime(1970, 1, 1) + timedelta(days=int(date_int))).date()
-                        else:
-                            date_val = None
+                    cur.execute("""
+                        INSERT INTO diet_logs (date, meal, food_name, calories, protein, carbs, fat, fiber,
+                                               sugar, sodium, saturated_fat, polyunsaturated_fat, monounsaturated_fat,
+                                               cholesterol, potassium, entry_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (entry_id) DO UPDATE SET
+                            date = EXCLUDED.date,
+                            meal = EXCLUDED.meal,
+                            food_name = EXCLUDED.food_name,
+                            calories = EXCLUDED.calories,
+                            protein = EXCLUDED.protein,
+                            carbs = EXCLUDED.carbs,
+                            fat = EXCLUDED.fat,
+                            fiber = EXCLUDED.fiber,
+                            sugar = EXCLUDED.sugar,
+                            sodium = EXCLUDED.sodium,
+                            saturated_fat = EXCLUDED.saturated_fat,
+                            polyunsaturated_fat = EXCLUDED.polyunsaturated_fat,
+                            monounsaturated_fat = EXCLUDED.monounsaturated_fat,
+                            cholesterol = EXCLUDED.cholesterol,
+                            potassium = EXCLUDED.potassium;
+                    """, (
+                        date_str,
+                        entry.get('meal', 'Unknown'),
+                        entry.get('food_entry_name'),
+                        entry.get('calories'),
+                        entry.get('protein'),
+                        entry.get('carbohydrate'),
+                        entry.get('fat'),
+                        entry.get('fiber'),
+                        entry.get('sugar'),
+                        entry.get('sodium'),
+                        entry.get('saturated_fat'),
+                        entry.get('polyunsaturated_fat'),
+                        entry.get('monounsaturated_fat'),
+                        entry.get('cholesterol'),
+                        entry.get('potassium'),
+                        entry.get('food_entry_id')
+                    ))
 
-                        # Convert kg to lbs (1 kg = 2.20462 lbs)
-                        weight_lbs = float(weight_kg) * 2.20462 if weight_kg else None
-
-                        # Store current count to detect if this is insert or update
-                        cur.execute("SELECT COUNT(*) FROM weight_logs WHERE entry_id = %s",
-                                   (entry_id,))
-                        exists_before = cur.fetchone()[0] > 0
-
-                        cur.execute("""
-                            INSERT INTO weight_logs (date, weight, fat_percentage, comment, entry_id)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT (entry_id) DO UPDATE SET
-                                date = EXCLUDED.date,
-                                weight = EXCLUDED.weight,
-                                fat_percentage = EXCLUDED.fat_percentage,
-                                comment = EXCLUDED.comment;
-                        """, (date_val, weight_lbs, fat_pct, comment, entry_id))
-
-                        if exists_before:
-                            updated_count += 1
-                        else:
-                            inserted_count += 1
-
-                    except Exception as e:
-                        if not quiet:
-                            print(f"\n  ⚠️  Error inserting weight entry: {e}")
+                    if exists_before:
+                        updated_count += 1
+                    else:
+                        inserted_count += 1
 
                 conn.commit()
 
@@ -279,13 +319,13 @@ def save_to_neon(data, db_conn, quiet=False):
         print(f"⚠️  Error saving to database: {e}")
         raise
 
-def sync_single_month(fs, date_str, db_conn, quiet=False):
+def sync_single_date(fs, date_str, db_conn, quiet=False):
     """
-    Sync weight data for a single month.
+    Sync nutrition data for a single date.
 
     Args:
         fs: Fatsecret client instance
-        date_str: Date string in YYYY-MM-DD format (any day in the desired month)
+        date_str: Date string in YYYY-MM-DD format
         db_conn: Database connection string
         quiet: If True, suppress progress output
 
@@ -293,23 +333,23 @@ def sync_single_month(fs, date_str, db_conn, quiet=False):
         Tuple of (inserted_count, updated_count)
     """
     if not quiet:
-        print(f"\nProcessing month containing {date_str}...")
+        print(f"\nFetching food diary for {date_str}...")
 
-    data = fetch_weight_data(fs, date_str, quiet)
-    inserted, updated = save_to_neon(data, db_conn, quiet)
+    data = fetch_food_diary(fs, date_str)
+    inserted, updated = save_to_neon(data, date_str, db_conn, quiet)
 
     if not quiet:
         print(f"✓ Success! Data saved to Neon.")
 
     return inserted, updated
 
-def sync_backfill(fs, months, db_conn, quiet=False):
+def sync_backfill(fs, days, db_conn, quiet=False):
     """
-    Backfill weight data for the last N months.
+    Backfill nutrition data for the last N days.
 
     Args:
         fs: Fatsecret client instance
-        months: Number of months to backfill (including current month)
+        days: Number of days to backfill (including today)
         db_conn: Database connection string
         quiet: If True, suppress progress output
 
@@ -317,21 +357,21 @@ def sync_backfill(fs, months, db_conn, quiet=False):
         Tuple of (total_inserted, total_updated)
     """
     today = datetime.now()
-    months_to_fetch = [(today - timedelta(days=30*i)).strftime('%Y-%m-%d')
-                       for i in range(months - 1, -1, -1)]
+    dates_to_fetch = [(today - timedelta(days=i)).strftime('%Y-%m-%d')
+                      for i in range(days - 1, -1, -1)]
 
     if not quiet:
-        print(f"\n--- Backfilling {months} months ---\n")
+        print(f"\n--- Backfilling {days} days ({dates_to_fetch[0]} to {dates_to_fetch[-1]}) ---\n")
 
     total_inserted = 0
     total_updated = 0
 
-    for date_str in months_to_fetch:
+    for date_str in dates_to_fetch:
         if not quiet:
-            print(f"Processing month containing {date_str}...", end=" ")
+            print(f"Processing {date_str}...", end=" ")
 
-        data = fetch_weight_data(fs, date_str, quiet)
-        inserted, updated = save_to_neon(data, db_conn, quiet)
+        data = fetch_food_diary(fs, date_str)
+        inserted, updated = save_to_neon(data, date_str, db_conn, quiet)
 
         total_inserted += inserted
         total_updated += updated
@@ -346,24 +386,24 @@ def sync_backfill(fs, months, db_conn, quiet=False):
 def main():
     """Main entry point for the script."""
     parser = argparse.ArgumentParser(
-        description='Sync weight data from FatSecret API to Neon Postgres',
+        description='Sync nutrition data from FatSecret API to Neon Postgres',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s                        Interactive mode (prompts for date)
-  %(prog)s --date 2024-01-15      Fetch specific month
-  %(prog)s --backfill 3           Backfill last 3 months
-  %(prog)s --backfill 6 --quiet   Backfill 6 months (quiet, for cron)
+  %(prog)s --date 2024-01-15      Fetch specific date
+  %(prog)s --backfill 7           Backfill last 7 days
+  %(prog)s --backfill 30 --quiet  Backfill 30 days (quiet, for cron)
   %(prog)s --auth                 Force new OAuth authentication
         """
     )
 
     parser.add_argument('--date',
-                        help='Specific date to fetch month for (YYYY-MM-DD format)')
+                        help='Specific date to fetch (YYYY-MM-DD format)')
     parser.add_argument('--backfill',
                         type=int,
-                        metavar='MONTHS',
-                        help='Backfill last N months (including current month)')
+                        metavar='DAYS',
+                        help='Backfill last N days (including today)')
     parser.add_argument('--quiet', '-q',
                         action='store_true',
                         help='Quiet mode (minimal output, for cron/CI)')
@@ -384,7 +424,7 @@ Examples:
             sys.exit(1)
         db_conn = input("Enter your Neon DB Connection String: ").strip()
 
-    if not db_conn:
+    if not db_conn or "user:password" in db_conn:
         print("⚠️  Please provide a valid Neon database connection string")
         print("Set NEON_DB_URL or DATABASE_URL environment variable")
         sys.exit(1)
@@ -403,7 +443,7 @@ Examples:
 
     # Get authenticated client
     if not args.quiet:
-        print("--- FatSecret Weight Sync ---")
+        print("--- FatSecret Nutrition Sync ---")
 
     fs = get_fatsecret_client()
     if fs is None:
@@ -418,8 +458,8 @@ Examples:
             sync_backfill(fs, args.backfill, db_conn, args.quiet)
 
         elif args.date:
-            # Specific month mode
-            sync_single_month(fs, args.date, db_conn, args.quiet)
+            # Specific date mode
+            sync_single_date(fs, args.date, db_conn, args.quiet)
 
         else:
             # Interactive mode
@@ -427,12 +467,12 @@ Examples:
                 print("⚠️  Interactive mode requires user input. Use --date or --backfill for automated runs.")
                 sys.exit(1)
 
-            # Default to current month
-            default_date = datetime.now().strftime('%Y-%m-%d')
-            date_input = input(f"\nEnter date for month to fetch (YYYY-MM-DD) [default: {default_date}]: ").strip()
+            # Default to yesterday
+            default_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            date_input = input(f"\nEnter date to fetch (YYYY-MM-DD) [default: {default_date}]: ").strip()
             fetch_date = date_input if date_input else default_date
 
-            sync_single_month(fs, fetch_date, db_conn, args.quiet)
+            sync_single_date(fs, fetch_date, db_conn, args.quiet)
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Operation cancelled by user")
