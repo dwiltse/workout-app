@@ -40,6 +40,10 @@ from datetime import datetime, timedelta
 from fatsecret import Fatsecret
 import psycopg2
 
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 # Load environment variables from .env files
 try:
     from dotenv import load_dotenv
