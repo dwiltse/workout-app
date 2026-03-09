@@ -606,7 +606,9 @@ def save_to_database(fitbit_data, date, conn):
             weight_data = fitbit_data['body_weight']
             for entry in weight_data.get('weight', []):
                 log_id = entry.get('logId')
-                weight_lbs = entry.get('weight')  # Fitbit returns in user's unit (lbs if imperial)
+                weight_raw = entry.get('weight')  # Fitbit returns kg when account is set to metric
+                # Convert kg -> lbs (1 kg = 2.20462 lbs)
+                weight_lbs = round(weight_raw * 2.20462, 2) if weight_raw else None
                 bmi = entry.get('bmi')
                 body_fat_pct = entry.get('fat')  # Scale sends this if supported
                 source = entry.get('source', 'API')
@@ -626,7 +628,9 @@ def save_to_database(fitbit_data, date, conn):
             entries = weight_data.get('weight', [])
             if entries:
                 latest = entries[-1]
-                print(f"✓ Saved body metrics for {date}: {latest.get('weight')} lbs, BMI {latest.get('bmi')}, Fat {latest.get('fat')}%")
+                w_raw = latest.get('weight')
+                w_lbs = round(w_raw * 2.20462, 2) if w_raw else None
+                print(f"✓ Saved body metrics for {date}: {w_lbs} lbs ({w_raw} kg), BMI {latest.get('bmi')}, Fat {latest.get('fat')}%")
 
         # Save sleep data
         if 'sleep' in fitbit_data:
@@ -1140,7 +1144,9 @@ Examples:
                     entries = body_weight_data.get('weight', [])
                     if entries:
                         latest = entries[-1]
-                        print(f"  ✓ Body weight: {latest.get('weight')} lbs, BMI {latest.get('bmi')}, Fat {latest.get('fat')}%")
+                        w_raw = latest.get('weight')
+                        w_lbs = round(w_raw * 2.20462, 2) if w_raw else None
+                        print(f"  ✓ Body weight: {w_lbs} lbs ({w_raw} kg), BMI {latest.get('bmi')}, Fat {latest.get('fat')}%")
                     else:
                         print(f"  - Body weight: No measurement logged")
                 except Exception as e:
