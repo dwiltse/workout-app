@@ -102,7 +102,7 @@ class FitbitAPI:
             'response_type': 'code',
             'client_id': self.client_id,
             'redirect_uri': self.redirect_uri,
-            'scope': 'activity heartrate sleep profile respiratory_rate oxygen_saturation cardio_fitness',
+            'scope': 'activity heartrate sleep profile respiratory_rate oxygen_saturation cardio_fitness weight',
             'code_challenge': code_challenge,
             'code_challenge_method': 'S256',
             'state': state
@@ -241,6 +241,14 @@ class FitbitAPI:
     def get_vo2_max(self, date):
         """Get VO2 Max (cardio fitness) data for a specific date"""
         return self.make_api_request('/user/-/cardioscore/date/{date}.json', date)
+
+    def get_body_weight(self, date):
+        """Get body weight log for a specific date (includes BMI and body fat if logged by scale)"""
+        return self.make_api_request('/user/-/body/log/weight/date/{date}.json', date)
+
+    def get_body_fat(self, date):
+        """Get body fat percentage log for a specific date"""
+        return self.make_api_request('/user/-/body/log/fat/date/{date}.json', date)
 
     def get_activity_tcx(self, log_id):
         """Get TCX data for a specific activity (GPS/heart rate data)"""
@@ -593,6 +601,37 @@ def save_to_database(fitbit_data, date, conn):
                         """, (date, vo2_max))
                         print(f"✓ Saved VO2 Max data for {date} (VO2: {vo2_max})")
 
+        # Save body metrics (weight, BMI, body fat) from Renpho scale via Fitbit
+        if 'body_weight' in fitbit_data:
+            weight_data = fitbit_data['body_weight']
+            for entry in weight_data.get('weight', []):
+                log_id = entry.get('logId')
+                weight_raw = entry.get('weight')  # Fitbit returns kg when account is set to metric
+                # Convert kg -> lbs (1 kg = 2.20462 lbs)
+                weight_lbs = round(weight_raw * 2.20462, 2) if weight_raw else None
+                bmi = entry.get('bmi')
+                body_fat_pct = entry.get('fat')  # Scale sends this if supported
+                source = entry.get('source', 'API')
+                logged_time = entry.get('time')
+
+                if weight_lbs:
+                    cur.execute("""
+                        INSERT INTO fitbit_body_metrics
+                        (date, log_id, weight_lbs, bmi, body_fat_pct, source, logged_time)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (log_id) DO UPDATE SET
+                            weight_lbs = EXCLUDED.weight_lbs,
+                            bmi = EXCLUDED.bmi,
+                            body_fat_pct = EXCLUDED.body_fat_pct,
+                            source = EXCLUDED.source
+                    """, (date, log_id, weight_lbs, bmi, body_fat_pct, source, logged_time))
+            entries = weight_data.get('weight', [])
+            if entries:
+                latest = entries[-1]
+                w_raw = latest.get('weight')
+                w_lbs = round(w_raw * 2.20462, 2) if w_raw else None
+                print(f"✓ Saved body metrics for {date}: {w_lbs} lbs ({w_raw} kg), BMI {latest.get('bmi')}, Fat {latest.get('fat')}%")
+
         # Save sleep data
         if 'sleep' in fitbit_data:
             sleep_data = fitbit_data['sleep']
@@ -895,6 +934,18 @@ def create_tables_if_needed(db_conn):
           created_at TIMESTAMP DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS fitbit_body_metrics (
+          id SERIAL PRIMARY KEY,
+          date DATE NOT NULL,
+          log_id BIGINT UNIQUE,
+          weight_lbs DECIMAL(6,2),
+          bmi DECIMAL(5,2),
+          body_fat_pct DECIMAL(5,2),
+          source VARCHAR(50),
+          logged_time TIME,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+
         -- Indexes
         CREATE INDEX IF NOT EXISTS idx_fitbit_activity_date ON fitbit_activity_daily(date);
         CREATE INDEX IF NOT EXISTS idx_fitbit_heart_rate_date ON fitbit_heart_rate(date);
@@ -1085,6 +1136,21 @@ Examples:
                         print(f"  ✓ VO2 Max: Available")
                 except Exception as e:
                     print(f"  ✗ VO2 Max data error: {e}")
+
+                # Body weight / BMI / body fat (from Renpho scale via Fitbit)
+                try:
+                    body_weight_data = fitbit.get_body_weight(current_date)
+                    fitbit_data['body_weight'] = body_weight_data
+                    entries = body_weight_data.get('weight', [])
+                    if entries:
+                        latest = entries[-1]
+                        w_raw = latest.get('weight')
+                        w_lbs = round(w_raw * 2.20462, 2) if w_raw else None
+                        print(f"  ✓ Body weight: {w_lbs} lbs ({w_raw} kg), BMI {latest.get('bmi')}, Fat {latest.get('fat')}%")
+                    else:
+                        print(f"  - Body weight: No measurement logged")
+                except Exception as e:
+                    print(f"  ✗ Body weight data error: {e}")
 
                 # Exercise logs with GPS data
                 try:

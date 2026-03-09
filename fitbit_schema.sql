@@ -103,6 +103,19 @@ CREATE TABLE IF NOT EXISTS fitbit_exercises (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Body metrics from smart scale (Renpho → Fitbit sync)
+CREATE TABLE IF NOT EXISTS fitbit_body_metrics (
+  id SERIAL PRIMARY KEY,
+  date DATE NOT NULL,
+  log_id BIGINT UNIQUE,
+  weight_lbs DECIMAL(6,2),       -- body weight in lbs
+  bmi DECIMAL(5,2),              -- body mass index
+  body_fat_pct DECIMAL(5,2),     -- body fat percentage (from scale BIA)
+  source VARCHAR(50),            -- 'Aria', 'Renpho', 'API', etc.
+  logged_time TIME,              -- time of measurement
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Separate table for raw TCX data (optional - only if you need it)
 CREATE TABLE IF NOT EXISTS fitbit_exercise_tcx (
   exercise_log_id BIGINT PRIMARY KEY REFERENCES fitbit_exercises(exercise_log_id) ON DELETE CASCADE,
@@ -164,6 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_fitbit_gps_points_exercise ON fitbit_gps_points(e
 CREATE INDEX IF NOT EXISTS idx_fitbit_gps_points_time ON fitbit_gps_points(exercise_log_id, time_offset_seconds);
 CREATE INDEX IF NOT EXISTS idx_fitbit_routes_date ON fitbit_routes(route_date);
 CREATE INDEX IF NOT EXISTS idx_fitbit_routes_location ON fitbit_routes(start_latitude, start_longitude);
+CREATE INDEX IF NOT EXISTS idx_fitbit_body_metrics_date ON fitbit_body_metrics(date);
 
 -- Daily summary table for daily habits (Fitbit + FatSecret data)
 CREATE TABLE IF NOT EXISTS daily_summary (
@@ -181,6 +195,10 @@ CREATE TABLE IF NOT EXISTS daily_summary (
   spo2_avg DECIMAL(5,2), -- Blood oxygen percentage
   breathing_rate DECIMAL(5,2), -- Breaths per minute
   vo2_max DECIMAL(5,2), -- Cardio fitness score
+  -- Body metrics (from Renpho scale via Fitbit)
+  weight_lbs DECIMAL(6,2),
+  bmi DECIMAL(5,2),
+  body_fat_pct DECIMAL(5,2),
   -- FatSecret nutrition data (populated from diet_logs)
   calories_consumed INTEGER,
   protein_g DECIMAL(6,1),
