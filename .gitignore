@@ -2,12 +2,16 @@
 node_modules/
 npm-debug.log*
 
-# Environment variables
+# Environment variables (local only - never commit!)
 .env.local
 .env
 .fatsecret_tokens.pkl
 .fatsecret_tokens.json
 .fitbit_tokens.json
+
+# Ignore credential/token files in all locations
+*.tokens.json
+*.tokens.pkl
 
 # Next.js build output
 .next/
