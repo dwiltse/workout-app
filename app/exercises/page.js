@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 
 export default function ExerciseBrowser() {
@@ -14,15 +14,12 @@ export default function ExerciseBrowser() {
     level: ''
   });
 
-  const [availableOptions, setAvailableOptions] = useState({
-    equipment: [],
-    categories: [],
-    muscles: [],
-    levels: []
-  });
+  const debounceRef = useRef(null);
 
   useEffect(() => {
-    searchExercises();
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(searchExercises, 300);
+    return () => clearTimeout(debounceRef.current);
   }, [query, filters]);
 
   const searchExercises = async () => {

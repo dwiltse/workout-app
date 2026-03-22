@@ -40,3 +40,7 @@ pids
 
 # Coverage directory used by tools like istanbul
 coverage/
+
+# Database exports (for Databricks migration or backups)
+exports/
+*.sql

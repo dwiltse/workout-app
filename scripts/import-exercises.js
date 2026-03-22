@@ -1,10 +1,11 @@
-const { neon } = require('@neondatabase/serverless');
+const postgres = require('postgres');
 
 // Free Exercise DB GitHub raw URL
 const EXERCISE_DATA_URL = 'https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json';
 
+const sql = postgres(process.env.DATABASE_URL);
+
 async function importExercises() {
-  const sql = neon(process.env.DATABASE_URL);
 
   console.log('🔄 Fetching exercise data from free-exercise-db...');
 
@@ -66,15 +67,19 @@ async function importExercises() {
 
   } catch (error) {
     console.error('❌ Import failed:', error);
+    await sql.end();
     process.exit(1);
   }
+
+  await sql.end();
 }
 
 // Check if DATABASE_URL is set
 if (!process.env.DATABASE_URL) {
   console.error('❌ DATABASE_URL environment variable is required');
   console.log('💡 Add it to your .env.local file or run:');
-  console.log('   export DATABASE_URL="your_neon_connection_string"');
+  console.log('   export DATABASE_URL="postgresql://localhost/workout_db"  # local');
+  console.log('   export DATABASE_URL="your_cloud_connection_string"  # cloud');
   process.exit(1);
 }
 

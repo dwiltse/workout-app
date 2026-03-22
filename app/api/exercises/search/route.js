@@ -1,4 +1,4 @@
-import { neon } from '@neondatabase/serverless';
+import { sql } from '@/lib/db';
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -9,12 +9,6 @@ export async function GET(request) {
   const muscle = searchParams.get('muscle');
   const level = searchParams.get('level');
   const limit = parseInt(searchParams.get('limit')) || 50;
-
-  if (!process.env.DATABASE_URL) {
-    return Response.json({ error: 'Database not configured' }, { status: 500 });
-  }
-
-  const sql = neon(process.env.DATABASE_URL);
 
   try {
     // Build dynamic SQL query with filters

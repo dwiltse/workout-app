@@ -1,17 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
 export default function LogWorkoutClient({ routine, exercises, workoutLogId }) {
   const router = useRouter();
-  const [sets, setSets] = useState({});
-  const [currentExercise, setCurrentExercise] = useState(0);
-  const [saving, setSaving] = useState(false);
-
-  // Initialize sets state for each exercise
-  useEffect(() => {
+  const [sets, setSets] = useState(() => {
     const initialSets = {};
     exercises.forEach((ex) => {
       initialSets[ex.exercise_id] = Array.from({ length: ex.target_sets }, (_, i) => ({
@@ -21,8 +16,10 @@ export default function LogWorkoutClient({ routine, exercises, workoutLogId }) {
         completed: false,
       }));
     });
-    setSets(initialSets);
-  }, [exercises]);
+    return initialSets;
+  });
+  const [currentExercise, setCurrentExercise] = useState(0);
+  const [saving, setSaving] = useState(false);
 
   const handleSetChange = (exerciseId, setIndex, field, value) => {
     setSets((prev) => ({
@@ -59,8 +56,9 @@ export default function LogWorkoutClient({ routine, exercises, workoutLogId }) {
       }));
     } catch (e) {
       console.error('Failed to log set:', e);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const finishWorkout = async () => {
@@ -74,8 +72,9 @@ export default function LogWorkoutClient({ routine, exercises, workoutLogId }) {
       router.push('/history');
     } catch (e) {
       console.error('Failed to complete workout:', e);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const ex = exercises[currentExercise];

@@ -52,11 +52,9 @@ export default function WeightPage() {
   };
 
   // Calculate stats (with safety checks)
-  const latestWeight = history.length > 0 ? history[0]?.weight : null;
-  const weekAgo = history.length > 0 ? history.find((w) => {
-    const daysDiff = (new Date() - new Date(w.logged_at)) / (1000 * 60 * 60 * 24);
-    return daysDiff >= 7;
-  }) : null;
+  const latestWeight = history[0]?.weight ?? null;
+  const now = new Date();
+  const weekAgo = history.find((w) => (now - new Date(w.logged_at)) / (1000 * 60 * 60 * 24) >= 7) ?? null;
   const weekChange = (weekAgo && latestWeight) ? (latestWeight - weekAgo.weight).toFixed(1) : null;
 
   return (
